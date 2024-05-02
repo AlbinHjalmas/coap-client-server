@@ -1,0 +1,11 @@
+{
+    "recommendations": [
+        "nordic-semiconductor.nrf-connect",
+        "nordic-semiconductor.nrf-connect-extension-pack",
+        "dangmai.workspace-default-settings",
+        "yzhang.markdown-all-in-one",
+        "cschlosser.doxdocgen",
+        "marus25.cortex-debug",
+        "xaver.clang-format",
+    ]
+}
