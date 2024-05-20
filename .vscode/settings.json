@@ -11,13 +11,15 @@
         "editor.defaultFormatter": "xaver.clang-format"
     },
     "files.associations": {
+        "*.conf": "kconfig",
         "coap_service.h": "c",
         "net_ip.h": "c",
         "net_mgmt.h": "c",
         "byteorder.h": "c",
         "log.h": "c",
         "coap_client.h": "c",
-        "coap.h": "c"
+        "coap.h": "c",
+        "errno.h": "c"
     },
     "clang-format.style": "file"
 }

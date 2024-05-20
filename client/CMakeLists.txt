@@ -7,5 +7,12 @@ target_sources(app PRIVATE
     src/main.c
     src/coap_client.c
     src/server_proxy.c
+    src/print_service.c
 )
-target_include_directories(app PRIVATE ${ZEPHYR_BASE}/subsys/net/ip)
+
+target_include_directories(app PRIVATE
+    src 
+    ${ZEPHYR_BASE}/subsys/net/ip
+)
+
+zephyr_linker_sources(DATA_SECTIONS sections-ram.ld)

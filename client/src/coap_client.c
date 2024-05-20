@@ -7,6 +7,7 @@
 #include <zephyr/net/socket.h>
 
 #include <fcntl.h>
+#include <errno.h>
 
 #include "coap_client.h"
 

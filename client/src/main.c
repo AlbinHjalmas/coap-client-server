@@ -25,48 +25,140 @@
 LOG_MODULE_REGISTER(main, LOG_LEVEL_DBG);
 
 #define PEER_PORT 5683
+static const uint16_t LOCAL_COAP_SERVER_PORT = 5684;
+
 static server_proxy_t server_1;
-static server_proxy_t server_2;
+static server_proxy_t local_server;
+
+#include <zephyr/net/coap_service.h>
+#include <zephyr/net/net_ip.h>
+
+#ifdef CONFIG_NET_IPV6
+#include "ipv6.h"
+#include "net_private.h"
+#endif
+
+#include "print_service.h"
+
+/**
+ * @brief Address for all nodes on the local network segment that support CoAP.
+ *
+ * @note The specific address being defined here (0xff02::fd) is a reserved
+ * multicast address used for CoAP nodes on the local network segment. The
+ * 0xff02 at the start of the address indicates that this is a link-local
+ * multicast address, meaning it is only intended for devices on the same
+ * network segment. The ::fd at the end is the specific identifier for CoAP
+ * nodes.
+ */
+#define ALL_NODES_LOCAL_COAP_MCAST                                                                 \
+    {                                                                                              \
+        {                                                                                          \
+            {                                                                                      \
+                0xff, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xfd                            \
+            }                                                                                      \
+        }                                                                                          \
+    }
+
+static int join_coap_multicast_group(void)
+{
+    static struct in6_addr my_addr;
+    static struct sockaddr_in6 mcast_addr = { .sin6_family = AF_INET6,
+                                              .sin6_addr = ALL_NODES_LOCAL_COAP_MCAST,
+                                              .sin6_port = htons(LOCAL_COAP_SERVER_PORT) };
+    struct net_if_addr *ifaddr;
+    struct net_if *iface;
+    int ret;
+
+    iface = net_if_get_default();
+    if (!iface) {
+        LOG_ERR("Could not get the default interface");
+        return -ENOENT;
+    }
+
+    LOG_DBG("Interface %p", iface);
+
+#if defined(CONFIG_NET_CONFIG_SETTINGS)
+    if (net_addr_pton(AF_INET6, CONFIG_NET_CONFIG_MY_IPV6_ADDR, &my_addr) < 0) {
+        LOG_ERR("Invalid IPv6 address %s", CONFIG_NET_CONFIG_MY_IPV6_ADDR);
+    }
+#endif
+
+    ifaddr = net_if_ipv6_addr_add(iface, &my_addr, NET_ADDR_MANUAL, 0);
+    if (!ifaddr) {
+        LOG_ERR("Could not add unicast address to interface");
+        return -EINVAL;
+    }
+
+    LOG_DBG("Interface %p addr %p", iface, ifaddr);
+
+    ifaddr->addr_state = NET_ADDR_PREFERRED;
+
+    ret = net_ipv6_mld_join(iface, &mcast_addr.sin6_addr);
+    if (ret < 0) {
+        LOG_ERR("Cannot join %s IPv6 multicast group (%d)",
+                net_sprint_ipv6_addr(&mcast_addr.sin6_addr), ret);
+        return ret;
+    }
+
+    LOG_DBG("Joined %s IPv6 multicast group", net_sprint_ipv6_addr(&mcast_addr.sin6_addr));
+
+    return 0;
+}
 
 int main(void)
 {
-    int rc = server_proxy_start(&server_1, "2001:db8::1", PEER_PORT);
+    // Join the CoAP multicast group
+    LOG_DBG("Joining CoAP multicast group");
+    int rc = join_coap_multicast_group();
+    if (rc < 0) {
+        LOG_ERR("Failed to join CoAP multicast group: %d", rc);
+        return rc;
+    }
+
+    LOG_DBG("Initializing print service");
+    rc = print_service_init();
+    if (rc < 0) {
+        LOG_ERR("Failed to initialize print service (err %d)", rc);
+        return rc;
+    }
+
+    LOG_DBG("Connecting to remote CoAP server_1");
+    rc = server_proxy_start(&server_1, "2001:db8::1", PEER_PORT);
     if (rc < 0) {
         LOG_ERR("Failed to start CoAP server_1: %d", rc);
         goto exit;
     }
 
-    rc = server_proxy_start(&server_2, "2001:db8::2", PEER_PORT);
+    LOG_DBG("Connecting to local CoAP server");
+    rc = server_proxy_start(&local_server, "::1", LOCAL_COAP_SERVER_PORT);
     if (rc < 0) {
-        LOG_ERR("Failed to start CoAP server_2: %d", rc);
+        LOG_ERR("Failed to start CoAP local_server: %d", rc);
         goto exit;
     }
 
-    static const char *const path[] = { "print", NULL };
     uint8_t payload[128] = "Hello, World! N";
-    uint8_t buf[MAX_COAP_MSG_LEN];
 
-    for (int i = 0; i < 10; i++) {
+    for (unsigned int i = 0; i < UINT32_MAX; i++) {
         sprintf(payload, "Hello, World! %d To server 1 KUK", i);
         rc = server_proxy_print(&server_1, (const char *)payload, K_MSEC(500));
         if (rc < 0) {
             LOG_ERR("Failed to print message to server_1: %d", rc);
-            goto exit;
         }
 
-        sprintf(payload, "Hello, World! %d To server 2 KUK", i);
-        rc = server_proxy_print(&server_2, (const char *)payload, K_MSEC(500));
+        sprintf(payload, "Hello, World! %d To local server KUK", i);
+        rc = server_proxy_print(&local_server, (const char *)payload, K_MSEC(500));
         if (rc < 0) {
-            LOG_ERR("Failed to print message to server_2: %d", rc);
-            // goto exit;
+            LOG_ERR("Failed to print message to local server: %d", rc);
         }
 
         k_sleep(K_SECONDS(1));
     }
 
-    LOG_INF("CoAP server done");
+    LOG_INF("CoAP client done");
 
 exit:
     server_proxy_stop(&server_1);
     return rc;
 }
+
+COAP_SERVICE_DEFINE(coap_server, NULL, &LOCAL_COAP_SERVER_PORT, COAP_SERVICE_AUTOSTART);
