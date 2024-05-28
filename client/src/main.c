@@ -8,7 +8,6 @@
 #include <zephyr/logging/log.h>
 #include <zephyr/sys/printk.h>
 #include <zephyr/sys/byteorder.h>
-#include <zephyr/kernel.h>
 #include <zephyr/net/socket.h>
 #include <zephyr/net/net_mgmt.h>
 #include <zephyr/net/conn_mgr_connectivity.h>
@@ -25,6 +24,9 @@
 LOG_MODULE_REGISTER(main, LOG_LEVEL_DBG);
 
 #define PEER_PORT 5683
+#define MULTICAST_PORT 5685
+#define MESSAGE_INTERVAL K_SECONDS(1)
+
 static const uint16_t LOCAL_COAP_SERVER_PORT = 5684;
 
 static server_proxy_t server_1;
@@ -55,6 +57,15 @@ static server_proxy_t local_server;
         {                                                                                          \
             {                                                                                      \
                 0xff, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xfd                            \
+            }                                                                                      \
+        }                                                                                          \
+    }
+
+#define LINE_NODE_MCAST_ADDR                                                                       \
+    {                                                                                              \
+        {                                                                                          \
+            {                                                                                      \
+                0xff, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x02                            \
             }                                                                                      \
         }                                                                                          \
     }
@@ -105,6 +116,53 @@ static int join_coap_multicast_group(void)
     return 0;
 }
 
+static int create_multicast_socket(void)
+{
+    int sock = -1;
+    struct sockaddr_in6 addr = { .sin6_family = AF_INET6,
+                                 .sin6_port = htons(MULTICAST_PORT),
+                                 .sin6_addr = IN6ADDR_ANY_INIT };
+
+    sock = socket(AF_INET6, SOCK_DGRAM, IPPROTO_UDP);
+    if (sock < 0) {
+        LOG_ERR("Failed to create socket: %d", errno);
+        return -errno;
+    }
+
+    if (bind(sock, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+        LOG_ERR("Failed to bind socket: %d", errno);
+        close(sock);
+        return -errno;
+    }
+
+    return sock;
+}
+
+// static void send_multicast_message(int sock)
+// {
+//     struct sockaddr_in6 mcast_addr = {
+//         .sin6_family = AF_INET6,
+//         .sin6_port = htons(MULTICAST_PORT),
+//         .sin6_addr = LINE_NODE_MCAST_ADDR
+//     };
+
+//     char payload[128];
+//     unsigned int counter = 0;
+
+//     while (1) {
+//         snprintf(payload, sizeof(payload), "Hello, World! %d", counter++);
+//         int ret = sendto(sock, payload, strlen(payload), 0,
+//                          (struct sockaddr *)&mcast_addr, sizeof(mcast_addr));
+//         if (ret < 0) {
+//             LOG_ERR("Failed to send message: %d", errno);
+//         } else {
+//             LOG_DBG("Sent multicast message: %s", payload);
+//         }
+
+//         k_sleep(MESSAGE_INTERVAL);
+//     }
+// }
+
 int main(void)
 {
     // Join the CoAP multicast group
@@ -136,6 +194,17 @@ int main(void)
         goto exit;
     }
 
+    int multicast_sock = 0;
+    multicast_sock = create_multicast_socket();
+    if (multicast_sock < 0) {
+        LOG_ERR("Failed to create multicast socket: %d", multicast_sock);
+        goto exit;
+    }
+
+    struct sockaddr_in6 mcast_addr = { .sin6_family = AF_INET6,
+                                       .sin6_port = htons(MULTICAST_PORT),
+                                       .sin6_addr = LINE_NODE_MCAST_ADDR };
+
     uint8_t payload[128] = "Hello, World! N";
 
     for (unsigned int i = 0; i < UINT32_MAX; i++) {
@@ -151,6 +220,15 @@ int main(void)
             LOG_ERR("Failed to print message to local server: %d", rc);
         }
 
+        snprintf(payload, sizeof(payload), "Hello, World! %d", i);
+        int ret = sendto(multicast_sock, payload, strlen(payload), 0,
+                         (struct sockaddr *)&mcast_addr, sizeof(mcast_addr));
+        if (ret < 0) {
+            LOG_ERR("Failed to send multicast message: %d", errno);
+        } else {
+            LOG_DBG("Sent multicast message: %s", payload);
+        }
+
         k_sleep(K_SECONDS(1));
     }
 
@@ -158,6 +236,7 @@ int main(void)
 
 exit:
     server_proxy_stop(&server_1);
+    close(multicast_sock);
     return rc;
 }
 

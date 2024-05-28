@@ -24,6 +24,7 @@ LOG_MODULE_REGISTER(coap_server, LOG_LEVEL_DBG);
 #include "print_service.h"
 
 static const uint16_t coap_port = 5683;
+static const uint16_t multicast_port = 5685; // Different port for multicast group
 
 #define ALL_NODES_LOCAL_COAP_MCAST                                                                 \
     {                                                                                              \
@@ -38,7 +39,7 @@ static const uint16_t coap_port = 5683;
     {                                                                                              \
         {                                                                                          \
             {                                                                                      \
-                0xff, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x01                            \
+                0xff, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x02                            \
             }                                                                                      \
         }                                                                                          \
     }
@@ -53,6 +54,7 @@ static int join_multicast_group(struct in6_addr *mcast_addr)
 {
     struct net_if_mcast_addr *if_maddr;
     struct net_if *iface;
+    char addr_str[NET_IPV6_ADDR_LEN];
 
     iface = net_if_get_default();
     if (!iface) {
@@ -60,27 +62,34 @@ static int join_multicast_group(struct in6_addr *mcast_addr)
         return -ENOENT;
     }
 
+    if (!net_if_is_up(iface)) {
+        LOG_ERR("Default interface is down");
+        return -ENETDOWN;
+    }
+
+    net_addr_ntop(AF_INET6, mcast_addr, addr_str, sizeof(addr_str));
+    LOG_DBG("Joining multicast group %s", addr_str);
+
     if_maddr = net_if_ipv6_maddr_add(iface, mcast_addr);
     if (!if_maddr) {
-        char addr_str[NET_IPV6_ADDR_LEN];
-        net_addr_ntop(AF_INET6, mcast_addr, addr_str, sizeof(addr_str));
         LOG_ERR("Could not add multicast address %s to interface", addr_str);
         return -EINVAL;
     }
 
     if_maddr->is_joined = true;
+    LOG_DBG("Joined multicast group %s", addr_str);
 
     return 0;
 }
 
-static int join_coap_multicast_group(void)
+static int join_multicast_groups(void)
 {
-    static struct in6_addr coap_mcast_addr = ALL_NODES_LOCAL_COAP_MCAST;
+    static struct in6_addr all_nodes_local_coap_mcast = ALL_NODES_LOCAL_COAP_MCAST;
     static struct in6_addr line_node_mcast_addr = LINE_NODE_MCAST_ADDR;
 
     int ret;
 
-    ret = join_multicast_group(&coap_mcast_addr);
+    ret = join_multicast_group(&all_nodes_local_coap_mcast);
     if (ret < 0) {
         return ret;
     }
@@ -93,9 +102,8 @@ static int join_coap_multicast_group(void)
     return 0;
 }
 
-static void process_received_message(void *p1, void *p2, void *p3)
+static void process_received_message(int sock)
 {
-    int sock = (int)(intptr_t)p1;
     struct sockaddr_in6 src_addr;
     socklen_t addr_len = sizeof(src_addr);
     char buffer[128];
@@ -117,40 +125,40 @@ int main(void)
 {
     LOG_DBG("Starting CoAP server");
 
-    int coap_sock;
+    int multicast_sock;
 
     coap_event_handler_init();
 
-    int ret = join_coap_multicast_group();
+    int ret = join_multicast_groups();
     if (ret < 0) {
         LOG_ERR("Failed to join multicast groups (err %d)", ret);
         return ret;
     }
 
-    coap_sock = socket(AF_INET6, SOCK_DGRAM, IPPROTO_UDP);
-    if (coap_sock < 0) {
-        LOG_ERR("Failed to create socket");
+    multicast_sock = socket(AF_INET6, SOCK_DGRAM, IPPROTO_UDP);
+    if (multicast_sock < 0) {
+        LOG_ERR("Failed to create multicast socket: %d", errno);
         return -errno;
     }
 
     struct sockaddr_in6 bind_addr = {
         .sin6_family = AF_INET6,
         .sin6_addr = IN6ADDR_ANY_INIT,
-        .sin6_port = htons(coap_port),
+        .sin6_port = htons(multicast_port), // Use a different port for multicast
     };
 
-    ret = bind(coap_sock, (struct sockaddr *)&bind_addr, sizeof(bind_addr));
+    ret = bind(multicast_sock, (struct sockaddr *)&bind_addr, sizeof(bind_addr));
     if (ret < 0) {
-        LOG_ERR("Failed to bind socket");
-        close(coap_sock);
+        LOG_ERR("Failed to bind multicast socket: %d", errno);
+        close(multicast_sock);
         return -errno;
     }
 
     k_thread_create(&thread_data, thread_stack, K_THREAD_STACK_SIZEOF(thread_stack),
-                    process_received_message, (void *)(intptr_t)coap_sock, NULL, NULL,
-                    PRIORITY, 0, K_NO_WAIT);
+                    (k_thread_entry_t)process_received_message, (void *)(intptr_t)multicast_sock,
+                    NULL, NULL, PRIORITY, 0, K_NO_WAIT);
 
-    k_thread_name_set(&thread_data, "coap_recv_thread");
+    k_thread_name_set(&thread_data, "multicast_recv_thread");
 
     int rc = print_service_init();
     if (rc < 0) {

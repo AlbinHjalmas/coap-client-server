@@ -19,7 +19,8 @@
         "log.h": "c",
         "coap_client.h": "c",
         "coap.h": "c",
-        "errno.h": "c"
+        "errno.h": "c",
+        "net_l2.h": "c"
     },
     "clang-format.style": "file"
 }
